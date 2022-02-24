@@ -2,6 +2,12 @@ Asynchronise lets you turn your functions into fully coordinated, event-driven a
 
 It's ideal if you need a small, tidy, async and sync-compatible framework for managing events with runtime type-checking. Or if you really love decorators.
 
+## Installing
+
+```bash
+pip install asynchronise
+```
+
 ## Example
 
 ```python
