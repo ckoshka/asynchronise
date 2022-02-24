@@ -1,1 +1,1 @@
-from asynchronise import Asynchronise
+from .asynchronise import Asynchronise
