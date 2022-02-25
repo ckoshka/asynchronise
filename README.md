@@ -5,7 +5,7 @@ It's ideal if you need a small, tidy, async and sync-compatible framework for ma
 ## Installing
 
 ```bash
-pip install asynchronise
+pip install git+https://github.com/ckoshka/asynchronise
 ```
 
 ## Example
