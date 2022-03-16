@@ -1,7 +1,23 @@
-import asyncio
-#from loguru import logger
+"""
+# ideally would look like:
 
-#print = logger.info
+#no specification for eggs
+@asyncer.collect({
+    "flour": lambda f: f.weight > 500
+})
+async def bread_maker(flour: Optional[Flour], eggs: List[Egg]):
+    # do stuff
+    pass
+
+# use the type annotations and the keyword names to determine stuff
+would be cool if it could collect lists of a certain length?
+"""
+
+import asyncio
+
+# from loguru import logger
+
+# print = logger.info
 import functools
 from typing import (
     Any,
@@ -20,6 +36,16 @@ from typing import (
 )
 from uuid import uuid4
 from threading import Lock
+from typeguard import check_type
+
+
+def is_correct_type(data: Any, type_: Type) -> bool:
+    try:
+        check_type("var", data, type_)
+        return True
+    except TypeError:
+        return False
+
 
 class Event:
     def __init__(self, data: Any, uuid: str):
@@ -31,7 +57,7 @@ class Event:
     # Ideally, we'd like to be able to call methods on and get attributes from the data as if it were the data itself, so we can override getattr and setattr.
     def __getattr__(self, name: str) -> Any:
         if name not in self.__dict__:
-            #with self._lock:
+            # with self._lock:
             return self.__getattribute__("data").__getattribute__(name)
         return self.__getattribute__(name)
 
@@ -45,8 +71,6 @@ class Event:
 
 from collections import namedtuple
 
-Conditions = namedtuple("Conditions", ["type", "tag", "predicate"])
-
 
 class UniqueCollection:
     def __init__(
@@ -54,28 +78,41 @@ class UniqueCollection:
         func: Callable,
         keyword_lambdas: Dict[
             str,
-            Tuple[
-                Union[Type, Tuple[Type], List[Type]],
-                Optional[Hashable],
-                Optional[Callable[[Event], bool]],
-            ],
+            Callable,
         ],
         uuid: str,
     ) -> None:
         self.func = func
-        self.keyword_lambdas = {k: Conditions(*v) for k, v in keyword_lambdas.items()}
-        self.collection: Dict[str, Any] = {k: None for k in keyword_lambdas.keys()}
+        self.func_arguments = [
+            p.name for p in inspect.signature(func).parameters.values()
+        ]
+        self.func_annotations = [
+            p.annotation for p in inspect.signature(func).parameters.values()
+        ]
+        self.argument_annotations: Dict = {}
+        for argname, annotation in zip(self.func_arguments, self.func_annotations):
+            if annotation is inspect._empty:
+                self.argument_annotations[argname] = Any
+            else:
+                self.argument_annotations[argname] = annotation
+        self.keyword_lambdas = {
+            key: lambda x: True for key in self.func_arguments
+        }
+        self.keyword_lambdas.update(keyword_lambdas)
+        self.collection: Dict[str, Any] = {k: None for k in self.func_arguments}
         self.uuid = uuid
         self.empty_slots = set(self.collection.keys())
+        for key, val in self.__dict__.items():
+            print(key, val)
 
     async def check_object(self, obj: Event) -> Optional[Dict[str, Any]]:
         to_remove = set()
         for k in self.empty_slots:
-            condition = self.keyword_lambdas[k]
+            condition = self.keyword_lambdas.get(k, lambda x: False)
             if (
-                (condition.type is None or isinstance(obj.data, condition.type))
-                and (condition.tag is None or condition.tag in obj.tag)
-                and (condition.predicate is None or condition.predicate(obj))
+                condition(obj)
+                and k in obj.tag
+                and is_correct_type(obj.data, self.argument_annotations[k])
             ):
                 self.collection[k] = obj.data
                 to_remove.add(k)
@@ -92,14 +129,7 @@ class FunctionSlot:
     def __init__(
         self,
         func: Callable,
-        keyword_lambdas: Dict[
-            str,
-            Tuple[
-                Union[Type, Tuple[Type], List[Type]],
-                Optional[Hashable],
-                Optional[Callable[[Event], bool]],
-            ],
-        ],
+        keyword_lambdas: Dict[str, Callable[[Event], bool]],
     ) -> None:
         self.func = func
         self.keyword_lambdas = keyword_lambdas
@@ -107,14 +137,14 @@ class FunctionSlot:
 
     async def match_object(self, obj: Event):
         if obj.uuid not in self.collection_slots.keys():
-            #print("Creating new collection")
+            # print("Creating new collection")
             self.collection_slots[obj.uuid] = UniqueCollection(
                 self.func, self.keyword_lambdas, obj.uuid
             )
         collection = self.collection_slots[obj.uuid]
         result = await collection.check_object(obj)
         if result is not None:
-            #print("Returning result")
+            # print("Returning result")
             del self.collection_slots[obj.uuid]
             return (self.func, result)
 
@@ -128,14 +158,24 @@ def get_uuid(*args, **kwargs):
     ]
     if uus:
         uu = uus[0]
-        #print("UUID WAS FOUND IN THE ARGS:", uu)
+        # print("UUID WAS FOUND IN THE ARGS:", uu)
     else:
-        #print("No uuids found")
+        # print("No uuids found")
         uu = uuid4().hex
     return uu
 
+
 import random
 import ast
+
+def set_signature(func1: Callable, func2: Callable):
+    func1.__name__ = func2.__name__
+    func1.__doc__ = func2.__doc__
+    func1.__annotations__ = func2.__annotations__
+    func1.__kwdefaults__ = func2.__kwdefaults__
+    func1.__defaults__ = func2.__defaults__
+    return func1
+
 
 class Asynchronise:
     def __init__(self, name: Optional[str] = None) -> None:
@@ -178,24 +218,20 @@ class Asynchronise:
             return obj
 
         if inspect.isasyncgenfunction(func):
-            #logger.debug(f"Wrapping {func.__name__} as an async generator")
-            async_generator_decorator.__name__ = func.__name__
-            async_generator_decorator.__doc__ = func.__doc__
+            # logger.debug(f"Wrapping {func.__name__} as an async generator")
+            set_signature(async_generator_decorator, func)
             return async_generator_decorator
         elif inspect.iscoroutinefunction(func):
-            #logger.debug(f"Wrapping {func.__name__} as a coroutine")
-            async_function_decorator.__name__ = func.__name__
-            async_function_decorator.__doc__ = func.__doc__
+            # logger.debug(f"Wrapping {func.__name__} as a coroutine")
+            set_signature(async_function_decorator, func)
             return async_function_decorator
         elif inspect.isgeneratorfunction(func):
-            #logger.debug(f"Wrapping {func.__name__} as a generator")
-            sync_generator_decorator.__name__ = func.__name__
-            sync_generator_decorator.__doc__ = func.__doc__
+            # logger.debug(f"Wrapping {func.__name__} as a generator")
+            set_signature(sync_generator_decorator, func)
             return sync_generator_decorator
         else:
-            #logger.debug(f"Wrapping {func.__name__} as a function")
-            sync_function_decorator.__name__ = func.__name__
-            sync_function_decorator.__doc__ = func.__doc__
+            # logger.debug(f"Wrapping {func.__name__} as a function")
+            set_signature(sync_function_decorator, func)
             return sync_function_decorator
 
     async def create_event(self, obj: Any, uu: str):
@@ -242,15 +278,15 @@ class Asynchronise:
 
     def collect(
         self,
-        keyword_lambdas: Dict[
-            str,
-            Tuple[
-                Union[Type, Tuple[Type], List[Type]],
-                Optional[Hashable],
-                Optional[Callable[[Event], bool]],
-            ],
-        ],
+        keyword_lambdas: Optional[
+            Dict[
+                str,
+                Callable[[Event], bool],
+            ]
+        ] = None,
     ) -> Callable:
+        if keyword_lambdas is None:
+            keyword_lambdas = {}
         def decorator(func: Callable) -> Callable:
             self.functions[func.__name__] = FunctionSlot(func, keyword_lambdas)
             return func
